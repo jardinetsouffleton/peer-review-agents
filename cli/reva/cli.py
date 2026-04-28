@@ -21,6 +21,18 @@ from reva.config import (
 )
 from reva.launch_script import write_launch_files
 from reva.prompt import assemble_prompt
+from reva.registration import (
+    OWNER_TOKEN_FILENAME,
+    KoalaApiError,
+    create_agent as register_koala_agent,
+    list_agents as list_registered_agents,
+    login_owner,
+    read_owner_token,
+    save_agent_credentials,
+    save_owner_token,
+    signup_owner,
+    split_openreview_ids,
+)
 from reva.tmux import (
     build_launch_script,
     create_session,
@@ -49,6 +61,85 @@ def main(ctx, config_path):
 
 def _get_config(ctx):
     return load_config(ctx.obj.get("config_path"))
+
+
+def _token_file_path(cfg, token_file: str) -> Path:
+    path = Path(token_file)
+    return path if path.is_absolute() else cfg.project_root / path
+
+
+def _create_agent_files(cfg, *, name: str, backend: str) -> Path:
+    agent_dir = cfg.agents_dir / name
+    if agent_dir.exists():
+        raise click.ClickException(f"Agent directory already exists: {agent_dir}")
+    agent_dir.mkdir(parents=True)
+
+    starter_template = cfg.default_system_prompt_path.read_text(encoding="utf-8")
+    (agent_dir / "system_prompt.md").write_text(
+        starter_template.replace("{name}", name), encoding="utf-8"
+    )
+
+    config_data = {
+        "name": name,
+        "backend": backend,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    (agent_dir / "config.json").write_text(
+        json.dumps(config_data, indent=2), encoding="utf-8"
+    )
+    (agent_dir / ".agent_name").write_text(name, encoding="utf-8")
+    return agent_dir
+
+
+def _resolve_owner_token(
+    cfg,
+    *,
+    owner_token: str | None,
+    token_file: str,
+    email: str | None = None,
+    password: str | None = None,
+) -> str:
+    if owner_token:
+        return owner_token.strip()
+
+    env_token = os.environ.get("KOALA_OWNER_TOKEN", "").strip()
+    if env_token:
+        return env_token
+
+    path = _token_file_path(cfg, token_file)
+    saved = read_owner_token(path)
+    if saved:
+        return saved
+
+    if email:
+        if password is None:
+            password = click.prompt("Koala password", hide_input=True)
+        try:
+            result = login_owner(
+                email=email,
+                password=password,
+                base_url=cfg.koala_base_url,
+            )
+        except KoalaApiError as exc:
+            raise click.ClickException(str(exc))
+        token = result["access_token"]
+        save_owner_token(path, token)
+        return token
+
+    raise click.ClickException(
+        f"Owner token missing. Run `reva login --email <email>` first, "
+        f"or pass --owner-token, or set KOALA_OWNER_TOKEN."
+    )
+
+
+def _default_agent_description(agent_dir: Path, name: str) -> str:
+    prompt_path = agent_dir / "system_prompt.md"
+    if prompt_path.exists():
+        for line in prompt_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip(" #")
+            if stripped and "TODO" not in stripped and stripped.lower() != f"agent: {name}".lower():
+                return stripped[:240]
+    return f"Koala peer-review agent: {name}"
 
 
 # --------------------------------------------------------------------------- #
@@ -87,26 +178,7 @@ def init(ctx, path):
 def create(ctx, name, backend):
     """Create a new agent directory with a starter system prompt."""
     cfg = _get_config(ctx)
-
-    agent_dir = cfg.agents_dir / name
-    if agent_dir.exists():
-        raise click.ClickException(f"Agent directory already exists: {agent_dir}")
-    agent_dir.mkdir(parents=True)
-
-    starter_template = cfg.default_system_prompt_path.read_text(encoding="utf-8")
-    (agent_dir / "system_prompt.md").write_text(
-        starter_template.replace("{name}", name), encoding="utf-8"
-    )
-
-    config_data = {
-        "name": name,
-        "backend": backend,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    (agent_dir / "config.json").write_text(
-        json.dumps(config_data, indent=2), encoding="utf-8"
-    )
-    (agent_dir / ".agent_name").write_text(name, encoding="utf-8")
+    agent_dir = _create_agent_files(cfg, name=name, backend=backend)
 
     click.echo(f"Created agent: {name}")
     click.echo(f"  directory: {agent_dir}")
@@ -115,6 +187,186 @@ def create(ctx, name, backend):
         f"  next steps: edit {agent_dir / 'system_prompt.md'}, drop a key at "
         f"{agent_dir / '.api_key'}, then `reva launch --name {name}`"
     )
+
+
+# --------------------------------------------------------------------------- #
+# reva signup / login / register
+# --------------------------------------------------------------------------- #
+
+
+@main.command()
+@click.option("--email", required=True, help="Koala owner email.")
+@click.option("--password", prompt=True, hide_input=True, help="Koala owner password.")
+@click.option("--owner-name", required=True, help="Human owner display name.")
+@click.option(
+    "--openreview-id",
+    "openreview_ids",
+    multiple=True,
+    required=True,
+    help="OpenReview profile id. Repeat or comma-separate for a team, max 3.",
+)
+@click.option(
+    "--token-file",
+    default=OWNER_TOKEN_FILENAME,
+    show_default=True,
+    help="Where to store the owner access token, relative to the project root.",
+)
+@click.pass_context
+def signup(ctx, email, password, owner_name, openreview_ids, token_file):
+    """Create a Koala human owner account and save its access token."""
+    cfg = _get_config(ctx)
+    ids = split_openreview_ids(openreview_ids)
+    if not ids:
+        raise click.ClickException("Provide at least one --openreview-id.")
+    if len(ids) > 3:
+        raise click.ClickException("Koala accepts at most 3 OpenReview IDs per team.")
+    try:
+        result = signup_owner(
+            email=email,
+            password=password,
+            name=owner_name,
+            openreview_ids=ids,
+            base_url=cfg.koala_base_url,
+        )
+    except KoalaApiError as exc:
+        raise click.ClickException(str(exc))
+    path = _token_file_path(cfg, token_file)
+    save_owner_token(path, result["access_token"])
+    click.echo(f"Signed up owner: {result['name']} ({result['actor_id']})")
+    click.echo(f"  token: {path}")
+
+
+@main.command()
+@click.option("--email", required=True, help="Koala owner email.")
+@click.option("--password", prompt=True, hide_input=True, help="Koala owner password.")
+@click.option(
+    "--token-file",
+    default=OWNER_TOKEN_FILENAME,
+    show_default=True,
+    help="Where to store the owner access token, relative to the project root.",
+)
+@click.pass_context
+def login(ctx, email, password, token_file):
+    """Log in as a Koala human owner and save its access token."""
+    cfg = _get_config(ctx)
+    try:
+        result = login_owner(
+            email=email,
+            password=password,
+            base_url=cfg.koala_base_url,
+        )
+    except KoalaApiError as exc:
+        raise click.ClickException(str(exc))
+    path = _token_file_path(cfg, token_file)
+    save_owner_token(path, result["access_token"])
+    click.echo(f"Logged in owner: {result['name']} ({result['actor_id']})")
+    click.echo(f"  token: {path}")
+
+
+@main.command(name="register")
+@click.option("--name", required=True, help="Local agent name to register on Koala.")
+@click.option(
+    "--backend",
+    type=click.Choice(BACKEND_CHOICES),
+    default="claude-code",
+    show_default=True,
+    help="Backend to use if the local agent directory does not exist.",
+)
+@click.option("--description", default=None, help="Public Koala profile description.")
+@click.option("--github-repo", default=None, help="Override config.toml github_repo.")
+@click.option("--owner-token", default=None, help="Koala human owner access token.")
+@click.option("--email", default=None, help="Log in with this owner email if no token is saved.")
+@click.option("--password", default=None, hide_input=True, help="Owner password for --email login.")
+@click.option(
+    "--token-file",
+    default=OWNER_TOKEN_FILENAME,
+    show_default=True,
+    help="Saved owner token file, relative to the project root.",
+)
+@click.option("--force", is_flag=True, help="Overwrite an existing local .api_key.")
+@click.pass_context
+def register_agent(
+    ctx,
+    name,
+    backend,
+    description,
+    github_repo,
+    owner_token,
+    email,
+    password,
+    token_file,
+    force,
+):
+    """Register a local agent on Koala and save its one-time API key."""
+    cfg = _get_config(ctx)
+    repo = github_repo or cfg.github_repo
+    repo_err = validate_github_repo(repo)
+    if repo_err:
+        raise click.ClickException(repo_err)
+
+    agent_dir = cfg.agents_dir / name
+    if not agent_dir.exists():
+        agent_dir = _create_agent_files(cfg, name=name, backend=backend)
+        click.echo(f"Created local agent: {agent_dir}")
+
+    api_key_path = agent_dir / ".api_key"
+    if api_key_path.exists() and api_key_path.read_text(encoding="utf-8").strip() and not force:
+        raise click.ClickException(
+            f"{api_key_path} already exists. Use --force only if you are replacing it intentionally."
+        )
+
+    token = _resolve_owner_token(
+        cfg,
+        owner_token=owner_token,
+        token_file=token_file,
+        email=email,
+        password=password,
+    )
+    profile_description = description or _default_agent_description(agent_dir, name)
+    try:
+        result = register_koala_agent(
+            owner_token=token,
+            name=name,
+            github_repo=repo,
+            description=profile_description,
+            base_url=cfg.koala_base_url,
+        )
+    except KoalaApiError as exc:
+        raise click.ClickException(str(exc))
+
+    save_agent_credentials(agent_dir, agent_id=result["id"], api_key=result["api_key"])
+    click.echo(f"Registered agent: {name} ({result['id']})")
+    click.echo(f"  key: {api_key_path}")
+    click.echo(f"  repo: {repo}")
+
+
+@main.command(name="agents")
+@click.option("--owner-token", default=None, help="Koala human owner access token.")
+@click.option(
+    "--token-file",
+    default=OWNER_TOKEN_FILENAME,
+    show_default=True,
+    help="Saved owner token file, relative to the project root.",
+)
+@click.pass_context
+def agents(ctx, owner_token, token_file):
+    """List Koala agents registered under the saved owner token."""
+    cfg = _get_config(ctx)
+    token = _resolve_owner_token(cfg, owner_token=owner_token, token_file=token_file)
+    try:
+        rows = list_registered_agents(owner_token=token, base_url=cfg.koala_base_url)
+    except KoalaApiError as exc:
+        raise click.ClickException(str(exc))
+    if not rows:
+        click.echo("No registered agents.")
+        return
+    click.echo(f"{'NAME':<28s} {'KARMA':>8s} {'STRIKES':>7s} {'ID'}")
+    click.echo("-" * 80)
+    for row in rows:
+        click.echo(
+            f"{row['name']:<28s} {row['karma']:>8.1f} "
+            f"{row['strike_count']:>7d} {row['id']}"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -469,6 +721,127 @@ def view(ctx, web, host, port):
 
 
 # --------------------------------------------------------------------------- #
+# reva research
+# --------------------------------------------------------------------------- #
+
+
+def _project_path(cfg, value, default):
+    raw = Path(value or default)
+    return raw if raw.is_absolute() else (cfg.project_root / raw)
+
+
+@main.group()
+def research():
+    """Run offline autoresearch loops for prompt variants."""
+
+
+@research.command("run")
+@click.option("--name", required=True, help="Agent name to evaluate.")
+@click.option(
+    "--tasks",
+    default=None,
+    help="JSONL task file. Defaults to research/tasks/smoke.jsonl.",
+)
+@click.option(
+    "--variants-dir",
+    default=None,
+    help="Directory of .md prompt variants. Defaults to research/variants.",
+)
+@click.option(
+    "--output-dir",
+    default=None,
+    help="Directory for run outputs. Defaults to research/runs.",
+)
+@click.option("--iterations", type=int, default=1, show_default=True)
+@click.option("--top-k", type=int, default=2, show_default=True)
+@click.option(
+    "--runner",
+    default=None,
+    help=(
+        "Optional external command. Supports {prompt_file}, {task_file}, "
+        "and {output_file} placeholders. Without this, uses a deterministic mock runner."
+    ),
+)
+@click.option("--runner-shell", is_flag=True, help="Run --runner through the shell.")
+@click.option("--retries", type=int, default=0, show_default=True, help="Retries per candidate.")
+@click.option("--fail-fast", is_flag=True, help="Abort the run on the first candidate failure.")
+@click.option("--timeout", type=int, default=300, show_default=True, help="Runner timeout in seconds.")
+@click.pass_context
+def research_run(
+    ctx,
+    name,
+    tasks,
+    variants_dir,
+    output_dir,
+    iterations,
+    top_k,
+    runner,
+    runner_shell,
+    retries,
+    fail_fast,
+    timeout,
+):
+    """Evaluate prompt variants offline without posting to Koala."""
+    from reva.research import run_research
+
+    cfg = _get_config(ctx)
+    agent_dir = cfg.agents_dir / name
+    if not agent_dir.exists():
+        raise click.ClickException(f"Agent not found: {agent_dir}")
+
+    try:
+        run_dir = run_research(
+            agent_dir=agent_dir,
+            tasks_path=_project_path(cfg, tasks, "research/tasks/smoke.jsonl"),
+            variants_dir=_project_path(cfg, variants_dir, "research/variants"),
+            output_root=_project_path(cfg, output_dir, "research/runs"),
+            runner_command=runner,
+            runner_shell=runner_shell,
+            retries=retries,
+            fail_fast=fail_fast,
+            iterations=iterations,
+            top_k=top_k,
+            timeout_seconds=timeout,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise click.ClickException(str(exc))
+
+    click.echo(f"Research run written to: {run_dir}")
+    click.echo(f" report: {run_dir / 'report.md'}")
+    click.echo(f" scores: {run_dir / 'scores.json'}")
+
+
+@research.command("promote")
+@click.option("--name", required=True, help="Agent name to update.")
+@click.option("--run-dir", required=True, help="Research run directory containing scores.json.")
+@click.option("--variant", "variant_id", default=None, help="Variant id to promote. Defaults to best.")
+@click.pass_context
+def research_promote(ctx, name, run_dir, variant_id):
+    """Append the best research variant to an agent's system prompt."""
+    from reva.research import promote_variant
+
+    cfg = _get_config(ctx)
+    agent_dir = cfg.agents_dir / name
+    if not agent_dir.exists():
+        raise click.ClickException(f"Agent not found: {agent_dir}")
+
+    resolved_run_dir = _project_path(cfg, run_dir, run_dir)
+    try:
+        result = promote_variant(
+            agent_dir=agent_dir,
+            run_dir=resolved_run_dir,
+            variant_id=variant_id,
+        )
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(str(exc))
+
+    click.echo(f"Promoted variant: {result['variant_id']}")
+    click.echo(f" prompt: {result['prompt_path']}")
+    click.echo(f" backup: {result['backup_path']}")
+    click.echo(f" mean total: {result['mean_total']:.4f}")
+
+
+# --------------------------------------------------------------------------- #
 # reva archive / unarchive
 # --------------------------------------------------------------------------- #
 
@@ -534,3 +907,7 @@ def unarchive(ctx, name):
 
     shutil.move(str(src), str(dest))
     click.echo(f"Unarchived agent: {name}")
+
+
+if __name__ == "__main__":
+    main()

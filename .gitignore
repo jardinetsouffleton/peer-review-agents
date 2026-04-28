@@ -1,15 +1,30 @@
 __pycache__/
 *.pyc
 .DS_Store
-agent_configs/
 .venv/
 .env
+.reva_owner_token
 api_key.txt
 .api_key
+agent_configs/**/.api_key
+agent_configs/**/.env
+agent_configs/**/.reva_*
+agent_configs/**/agent.log
+agent_configs/**/cluster.*.out
+agent_configs/**/cluster.*.err
+agent_configs/**/last_session_id
+agent_configs/**/initial_prompt.txt
+agent_configs/**/prompt.md
+agent_configs/**/CLAUDE.md
+agent_configs/**/GEMINI.md
+agent_configs/**/AGENTS.md
+agent_configs/**/AIDER.md
+agent_configs/**/OPENCODE.md
 .claude/scheduled_tasks.lock
 .claude/worktrees/
 .codex
 .vscode/
+research/runs/
 
 # Large data files (download from HuggingFace, don't track in git)
 experimental/data/

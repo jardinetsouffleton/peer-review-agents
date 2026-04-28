@@ -33,6 +33,10 @@ def test_main_help_lists_expected_commands():
     for cmd in (
         "init",
         "create",
+        "signup",
+        "login",
+        "register",
+        "agents",
         "launch",
         "stop",
         "status",
@@ -254,6 +258,117 @@ def test_create_existing_agent_errors_out(tmp_path):
     with patch("reva.cli._get_config", return_value=mock_cfg):
         result = _invoke("create", "--name", "foo")
         assert result.exit_code != 0
+
+
+# ── functional: Koala registration ──────────────────────────────────
+
+def test_signup_saves_owner_token(tmp_path):
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    mock_cfg = _mock_cfg_with_starter(tmp_path, agents_dir)
+    mock_cfg.project_root = tmp_path
+
+    response = {
+        "access_token": "OWNER-TOKEN",
+        "actor_id": "owner-id",
+        "name": "Owner Name",
+    }
+    with patch("reva.cli._get_config", return_value=mock_cfg), \
+         patch("reva.cli.signup_owner", return_value=response) as mock_signup:
+        result = _invoke(
+            "signup",
+            "--email", "owner@example.com",
+            "--password", "secretpass",
+            "--owner-name", "Owner Name",
+            "--openreview-id", "~Owner_Name1",
+        )
+
+    assert result.exit_code == 0, result.output
+    mock_signup.assert_called_once()
+    assert (tmp_path / ".reva_owner_token").read_text(encoding="utf-8").strip() == "OWNER-TOKEN"
+
+
+def test_login_saves_owner_token(tmp_path):
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    mock_cfg = _mock_cfg_with_starter(tmp_path, agents_dir)
+    mock_cfg.project_root = tmp_path
+
+    response = {
+        "access_token": "LOGIN-TOKEN",
+        "actor_id": "owner-id",
+        "name": "Owner Name",
+    }
+    with patch("reva.cli._get_config", return_value=mock_cfg), \
+         patch("reva.cli.login_owner", return_value=response):
+        result = _invoke(
+            "login",
+            "--email", "owner@example.com",
+            "--password", "secretpass",
+        )
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / ".reva_owner_token").read_text(encoding="utf-8").strip() == "LOGIN-TOKEN"
+
+
+def test_register_creates_local_agent_and_saves_api_key(tmp_path):
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    mock_cfg = _mock_cfg_with_starter(tmp_path, agents_dir)
+    mock_cfg.project_root = tmp_path
+    (tmp_path / ".reva_owner_token").write_text("OWNER-TOKEN\n", encoding="utf-8")
+
+    response = {"id": "agent-id", "api_key": "cs_agent_key"}
+    with patch("reva.cli._get_config", return_value=mock_cfg), \
+         patch("reva.cli.register_koala_agent", return_value=response) as mock_register:
+        result = _invoke("register", "--name", "self-improver", "--backend", "codex")
+
+    assert result.exit_code == 0, result.output
+    agent_dir = agents_dir / "self-improver"
+    assert (agent_dir / "system_prompt.md").exists()
+    assert (agent_dir / ".api_key").read_text(encoding="utf-8").strip() == "cs_agent_key"
+    assert (agent_dir / ".agent_id").read_text(encoding="utf-8").strip() == "agent-id"
+    mock_register.assert_called_once()
+    assert mock_register.call_args.kwargs["owner_token"] == "OWNER-TOKEN"
+    assert mock_register.call_args.kwargs["github_repo"] == "https://github.com/test-owner/my-fork"
+
+
+def test_register_refuses_existing_api_key_without_force(tmp_path):
+    agents_dir = tmp_path / "agents"
+    agent_dir = agents_dir / "foo"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "config.json").write_text(json.dumps({"name": "foo", "backend": "codex"}))
+    (agent_dir / "system_prompt.md").write_text("Prompt", encoding="utf-8")
+    (agent_dir / ".api_key").write_text("existing\n", encoding="utf-8")
+
+    mock_cfg = _mock_cfg_with_starter(tmp_path, agents_dir)
+    mock_cfg.project_root = tmp_path
+    (tmp_path / ".reva_owner_token").write_text("OWNER-TOKEN\n", encoding="utf-8")
+
+    with patch("reva.cli._get_config", return_value=mock_cfg), \
+         patch("reva.cli.register_koala_agent") as mock_register:
+        result = _invoke("register", "--name", "foo")
+
+    assert result.exit_code != 0
+    assert "already exists" in result.output
+    mock_register.assert_not_called()
+
+
+def test_agents_lists_registered_agents(tmp_path):
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    mock_cfg = _mock_cfg_with_starter(tmp_path, agents_dir)
+    mock_cfg.project_root = tmp_path
+    (tmp_path / ".reva_owner_token").write_text("OWNER-TOKEN\n", encoding="utf-8")
+
+    rows = [{"name": "alpha", "karma": 99.5, "strike_count": 0, "id": "agent-id"}]
+    with patch("reva.cli._get_config", return_value=mock_cfg), \
+         patch("reva.cli.list_registered_agents", return_value=rows):
+        result = _invoke("agents")
+
+    assert result.exit_code == 0, result.output
+    assert "alpha" in result.output
+    assert "99.5" in result.output
 
 
 # ── functional: reva launch .api_key gate ────────────────────────────

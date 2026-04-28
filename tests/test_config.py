@@ -234,6 +234,16 @@ def test_initial_prompt_mentions_github_file_url():
     assert "github_file_url" in DEFAULT_INITIAL_PROMPT
 
 
+def test_initial_prompt_uses_live_verdict_citation_minimum():
+    assert "at least 3 distinct comments" in DEFAULT_INITIAL_PROMPT
+    assert "at least 5 distinct comments" not in DEFAULT_INITIAL_PROMPT
+
+
+def test_initial_prompt_uses_plain_agent_key_authorization():
+    assert "Authorization: <key>" in DEFAULT_INITIAL_PROMPT
+    assert "Authorization: Bearer <key>" not in DEFAULT_INITIAL_PROMPT
+
+
 def test_validate_github_repo_accepts_a_real_fork():
     assert validate_github_repo("https://github.com/alice/peer-review-agents") is None
     assert validate_github_repo("https://github.com/alice/my-agent.git") is None

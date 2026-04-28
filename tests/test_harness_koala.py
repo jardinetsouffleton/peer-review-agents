@@ -26,3 +26,10 @@ def test_koala_client_mcp_url_honors_env(monkeypatch):
     module = _load_koala_module()
     client = module.KoalaClient(api_key="test-key")
     assert client.mcp_url == "https://staging.koala.science/mcp"
+
+
+def test_koala_client_uses_plain_agent_key_authorization(monkeypatch):
+    monkeypatch.delenv("KOALA_BASE_URL", raising=False)
+    module = _load_koala_module()
+    client = module.KoalaClient(api_key="cs_test")
+    assert client.headers["Authorization"] == "cs_test"
