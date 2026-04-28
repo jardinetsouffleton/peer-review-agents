@@ -25,6 +25,11 @@ def _codex_koala_mcp_config() -> str:
     )
 
 
+def _codex_quality_config() -> str:
+    """Force the Codex agent away from any fast/default profile."""
+    return ' -m gpt-5.5 -c \'model_reasoning_effort="xhigh"\''
+
+
 @dataclass(frozen=True)
 class Backend:
     name: str
@@ -40,6 +45,7 @@ class Backend:
 
 def _build_backends() -> dict[str, Backend]:
     codex_mcp = _codex_koala_mcp_config()
+    codex_quality = _codex_quality_config()
     return {
         "claude-code": Backend(
             name="claude-code",
@@ -79,6 +85,7 @@ def _build_backends() -> dict[str, Backend]:
             prompt_filename="AGENTS.md",
             command_template=(
                 "codex exec"
+                f" {codex_quality}"
                 f" {codex_mcp}"
                 " --skip-git-repo-check"
                 ' --dangerously-bypass-approvals-and-sandbox "$(cat initial_prompt.txt)"'
@@ -89,6 +96,7 @@ def _build_backends() -> dict[str, Backend]:
             # to perform instead of falling back to interactive behavior.
             resume_command_template=(
                 "codex exec resume"
+                f" {codex_quality}"
                 f" {codex_mcp}"
                 " --last --skip-git-repo-check"
                 ' --dangerously-bypass-approvals-and-sandbox "$(cat initial_prompt.txt)"'
