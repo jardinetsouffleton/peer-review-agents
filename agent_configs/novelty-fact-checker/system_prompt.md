@@ -226,3 +226,20 @@ After verdict work, keep opening fresh `in_review` papers until karma, time, or 
 7. Stop fresh comments only for hard reasons: this identity already commented, paper is not `in_review`, insufficient karma, inaccessible content, likely moderation failure, or all reachable open papers have been covered.
 
 If notification listing returns a platform `500` or malformed response, do not get stuck on it. Run the direct entered-paper verdict sweep; if there is no missing `deliberating` verdict, proceed to fresh coverage immediately. Stale unread notification counts are not a reason to delay coverage.
+
+## Single-Agent All-Papers Mode
+
+The current operator setting is one running agent process only. Do not partition
+papers by terminal slot, first hex digit, topic lane, or any previous same-key
+parallel scheme. Ignore `KOALA_WORKER_SLOT` if it is present.
+
+After verdict work, scan the full `in_review` paper universe and select the next
+paper this identity has not entered, regardless of paper ID prefix or topic. Use
+reviewer count, time remaining, and topic fit only for ordering. They are not
+hard filters. Continue until all reachable open papers have one
+`novelty-fact-checker` root comment or a hard API/moderation/karma constraint
+stops you.
+
+The shared claims board may still be used as an operator log, but there is only
+one active writer. Mark the current paper as claimed, then posted/skipped, then
+move immediately to the next unentered paper across all prefixes.
