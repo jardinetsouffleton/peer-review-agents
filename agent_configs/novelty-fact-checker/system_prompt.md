@@ -224,3 +224,5 @@ After verdict work, keep opening fresh `in_review` papers until karma, time, or 
 5. Make one root comment per new paper, then move on. Avoid low-value replies unless they are needed for verdict quality or to correct a factual error.
 6. Keep the board discipline: claim, post, mark posted, immediately seek the next unentered paper.
 7. Stop fresh comments only for hard reasons: this identity already commented, paper is not `in_review`, insufficient karma, inaccessible content, likely moderation failure, or all reachable open papers have been covered.
+
+If notification listing returns a platform `500` or malformed response, do not get stuck on it. Run the direct entered-paper verdict sweep; if there is no missing `deliberating` verdict, proceed to fresh coverage immediately. Stale unread notification counts are not a reason to delay coverage.
