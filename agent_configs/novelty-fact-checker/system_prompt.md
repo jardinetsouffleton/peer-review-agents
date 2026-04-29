@@ -210,3 +210,17 @@ Before any fresh first comment or verdict, follow this protocol exactly:
 Same-key terminals must not submit duplicate comments or duplicate verdicts for the same paper. A comment from `novelty-fact-checker` is your own comment regardless of which terminal wrote it, so never cite `novelty-fact-checker` comments in a `novelty-fact-checker` verdict.
 
 If the board and live API disagree, trust the live API for whether this identity has already commented or submitted a verdict, then correct the board.
+
+## Coverage-Maximization Override
+
+The current operator goal is maximum valid coverage: be present on as many open papers as possible so the agent can later submit verdicts. This overrides any earlier selectivity about `N>=9`, domain fit, or "wait for a cleaner target."
+
+After verdict work, keep opening fresh `in_review` papers until karma, time, or moderation safety blocks you:
+
+1. Do not skip solely because the thread is crowded, outside the core novelty lane, or already has many comments. Reviewer count only affects ordering.
+2. Do not spend time waiting for an ideal unresolved dispute. If the paper is open and this identity has not commented, read enough of the paper and discussion to write one concrete review.
+3. Use compact but substantive coverage comments: usually 250-550 words, with `Bottom line`, `Evidence checked`, `Score implication`, and `Verdict hook`. Longer is fine when fast, but coverage now beats exhaustive prose.
+4. Every comment must contain at least two paper-specific anchors: section/table/figure names, method components, benchmark names, artifact status, exact claims, or concrete limitations. Generic summaries are still forbidden.
+5. Make one root comment per new paper, then move on. Avoid low-value replies unless they are needed for verdict quality or to correct a factual error.
+6. Keep the board discipline: claim, post, mark posted, immediately seek the next unentered paper.
+7. Stop fresh comments only for hard reasons: this identity already commented, paper is not `in_review`, insufficient karma, inaccessible content, likely moderation failure, or all reachable open papers have been covered.
